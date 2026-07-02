@@ -1,0 +1,166 @@
+io:
+  # Passive capture mode for OVS mirror/SPAN ports.
+  # This mode observes traffic and ignores allow/block verdicts.
+  mode: afpacket
+  interface: ogfw-mon0
+  frameSize: 65536
+  blockSize: 1048576
+  numBlocks: 128
+  pollTimeout: 500ms
+  # Optional TPACKET_V3 mmap ring backend for higher PPS Linux captures.
+  # Keep false unless the host has been tested with the selected block/frame
+  # sizes and CAP_NET_RAW permissions.
+  ring: false
+  # Optional PACKET_FANOUT for multiple OpenGFW processes/sockets on one host.
+  # Use the same group and type on every participant.
+  fanoutGroup: null
+  fanoutType: hash
+
+workers:
+  count: 0
+  queueSize: 1024
+  tcpMaxBufferedPagesTotal: 65536
+  tcpMaxBufferedPagesPerConn: 16
+  tcpTimeout: 10m
+  udpMaxStreams: 65536
+
+ruleset:
+  geoip: ""
+  geosite: ""
+
+alert:
+  # Optional. Leave empty to only write local logs.
+  webhookUrl: ""
+  queueSize: 1024
+  timeout: 3s
+  headers: {}
+
+allowlist:
+  # Optional safety valve for approved VMs, networks, rules, or destinations.
+  # Matched rule hits are suppressed before risk aggregation and OVS response.
+  enabled: true
+  vmIds: []
+  vmNames: []
+  macs: []
+  ips: []
+  cidrs: []
+  rules: []
+  domains: []
+  # Keep an audit trail for suppressed hits in local logs.
+  logSuppressed: true
+  # Disabled by default so suppressed hits are not sent to webhooks.
+  webhookSuppressed: false
+
+fingerprints:
+  # Fill these lists with suspicious JA3/JA4 fingerprints observed and validated
+  # in your own environment. Empty lists simply make those rules not match.
+  ja3:
+    suspicious: []
+    # - hash: "replace-with-real-tls-ja3-md5"
+    #   name: "utls-chrome-randomized-example"
+    #   severity: medium
+    #   tags: ["utls", "proxy"]
+  ja4:
+    suspicious: []
+    # - hash: "replace-with-real-tls-ja4"
+    #   name: "tls-ja4-proxy-example"
+    #   severity: medium
+    #   tags: ["ja4", "proxy"]
+  quicJa3:
+    suspicious: []
+    # - hash: "replace-with-real-quic-ja3-md5"
+    #   name: "quic-proxy-example"
+    #   severity: medium
+    #   tags: ["quic", "proxy"]
+  quicJa4:
+    suspicious: []
+    # - hash: "replace-with-real-quic-ja4"
+    #   name: "quic-ja4-proxy-example"
+    #   severity: medium
+    #   tags: ["quic", "ja4", "proxy"]
+
+metrics:
+  # Disabled by default. Exposes Prometheus text metrics when enabled,
+  # including packet kernel stats, allowlist suppressions, and risk counters.
+  enabled: false
+  listen: 127.0.0.1:9090
+  path: /metrics
+
+identity:
+  # Optional static VM inventory. Matched fields are added to meta as vm.*.
+  # Entries can match l2.src/l2.dst MACs, src/dst IPs, and optional
+  # capture.interface / vlan.id constraints.
+  inventory: examples/vm-inventory.yaml
+  entries: []
+  libvirt:
+    # Disabled by default. When enabled, OpenGFW periodically runs virsh
+    # list/dumpxml and adds libvirt VM uuid/name/MAC metadata.
+    enabled: false
+    uri: qemu:///system
+    refreshInterval: 1m
+
+risk:
+  # Disabled by default. When enabled, rule hits are aggregated by VM identity
+  # inside the window. The key is vm.id, then vm.mac, then ip.src.
+  enabled: false
+  window: 10m
+  thresholds:
+    # Send a webhook event with type=risk when the score crosses this value.
+    alert: 8
+    # Trigger OVS quarantine only when the score crosses this value.
+    response: 12
+  weights:
+    vpn-wireguard: 6
+    vpn-openvpn: 6
+    proxy-trojan-heuristic: 5
+    proxy-fully-encrypted-tcp: 4
+    proxy-socks: 3
+    tls-ech-observed: 1
+    quic-ech-observed: 1
+    udp443-long-lived-no-quic-sni: 1
+    hysteria2-quic-like-weak-signal: 2
+    hysteria2-custom-udp-weak-signal: 1
+    tuic-quic-like-weak-signal: 2
+    tuic-short-quic-burst-weak-signal: 1
+    masque-connect-udp-weak-signal: 1
+    tls-suspicious-ja3: 3
+    tls-suspicious-ja4: 3
+    quic-suspicious-ja3: 3
+    quic-suspicious-ja4: 3
+    tls-proxy-domain-observed: 2
+    tls-vless-reality-domain-weak-signal: 1
+    tls-shadowtls-anytls-domain-weak-signal: 1
+    dns-udp-proxy-domain-observed: 2
+    dns-vless-reality-domain-weak-signal: 1
+    dns-shadowtls-anytls-domain-weak-signal: 1
+    dns-tcp-proxy-domain-observed: 2
+    dns-tcp-vless-reality-domain-weak-signal: 1
+    dns-tcp-shadowtls-anytls-domain-weak-signal: 1
+
+response:
+  ovs:
+    # Disabled by default. Enable only after tuning detection rules.
+    # When enabled, high-confidence alerts can install temporary OVS drop flows.
+    # Existing rules/minSeverity direct response remains available even when
+    # risk.enabled is false. Risk response uses risk.thresholds.response.
+    enabled: false
+    bridge: br0
+    ofctl: ovs-ofctl
+    openFlow: ""
+    minSeverity: high
+    rules:
+      - vpn-wireguard
+      - vpn-openvpn
+      - proxy-trojan-heuristic
+      - proxy-fully-encrypted-tcp
+    priority: 50000
+    cookie: "0x4f474657"
+    # Best-effort cleanup of old quarantine flows with the same cookie at startup.
+    deleteOnStart: false
+    hardTimeout: 30m
+    idleTimeout: 0s
+    cooldown: 5m
+    queueSize: 256
+    commandTimeout: 3s
+    # Keep true in shared hosts so response only acts on inventory-correlated VMs.
+    requireIdentity: true

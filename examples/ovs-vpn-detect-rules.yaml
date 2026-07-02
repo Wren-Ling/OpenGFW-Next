@@ -1,0 +1,141 @@
+- name: vpn-wireguard
+  log: true
+  severity: high
+  expr: wireguard.message_type != nil
+
+- name: vpn-openvpn
+  log: true
+  severity: high
+  expr: openvpn.rx_pkt_cnt != nil || openvpn.tx_pkt_cnt != nil
+
+- name: proxy-trojan-heuristic
+  log: true
+  severity: high
+  expr: trojan.yes == true
+
+- name: proxy-fully-encrypted-tcp
+  log: true
+  severity: high
+  expr: fet.yes == true
+
+- name: proxy-socks
+  log: true
+  severity: medium
+  expr: socks.version != nil
+
+# Example: focus a rule on one VM MAC observed from the OVS mirror port.
+# Replace the address with the VM tap/vNIC MAC and remove the leading '#'.
+# For bidirectional mirrors, the VM MAC can appear as l2.src or l2.dst.
+#
+# - name: vm-specific-fully-encrypted-tcp
+#   log: true
+#   expr: (meta["l2.src"] == "52:54:00:00:00:01" || meta["l2.dst"] == "52:54:00:00:00:01") && fet.yes == true
+#
+# - name: vm-name-specific-wireguard
+#   log: true
+#   expr: meta["vm.name"] == "build-agent-01" && wireguard.message_type != nil
+
+- name: tls-ech-observed
+  log: true
+  severity: low
+  expr: tls.req.ech == true
+
+- name: quic-ech-observed
+  log: true
+  severity: low
+  expr: quic.req.ech == true
+
+- name: udp443-long-lived-no-quic-sni
+  log: true
+  severity: medium
+  expr: udpflow.udp443 && udpflow.long_lived && udpflow.bidirectional && udpflow.packet_count >= 12 && udpflow.balanced_directions && udpflow.large_packet_ratio >= 0.30 && quic.req.sni == nil
+
+- name: hysteria2-quic-like-weak-signal
+  log: true
+  severity: medium
+  expr: udpflow.udp443 && udpflow.long_lived && udpflow.bidirectional && udpflow.balanced_directions && udpflow.packet_count >= 20 && udpflow.large_packet_count >= 10 && udpflow.large_packet_ratio >= 0.45 && (udpflow.len_bucket_gt1200_ratio >= 0.10 || udpflow.len_bucket_le1200_ratio >= 0.20) && quic.req.sni == nil
+
+- name: hysteria2-custom-udp-weak-signal
+  log: true
+  severity: low
+  expr: udpflow.dst_port >= 1024 && udpflow.dst_port != 443 && udpflow.long_lived && udpflow.bidirectional && udpflow.balanced_directions && udpflow.packet_count >= 30 && udpflow.large_packet_count >= 10 && udpflow.avg_packet_len >= 600 && udpflow.tx_byte_ratio >= 0.10 && udpflow.rx_byte_ratio >= 0.10 && quic.req.sni == nil
+
+- name: tuic-quic-like-weak-signal
+  log: true
+  severity: medium
+  expr: udpflow.udp443 && udpflow.bidirectional && udpflow.balanced_directions && udpflow.packet_count >= 8 && udpflow.first_packet_len >= 1000 && udpflow.large_packet_count >= 4 && udpflow.large_packet_ratio >= 0.40 && (quic.req.alpn == nil || !("h3" in quic.req.alpn))
+
+- name: tuic-short-quic-burst-weak-signal
+  log: true
+  severity: low
+  expr: udpflow.udp443 && udpflow.bidirectional && udpflow.balanced_directions && udpflow.packet_count >= 8 && udpflow.packet_count < 20 && udpflow.first_packet_len >= 1000 && udpflow.large_packet_count >= 4 && quic.req.sni == nil
+
+- name: masque-connect-udp-weak-signal
+  log: true
+  severity: low
+  expr: udpflow.udp443 && udpflow.long_lived && udpflow.bidirectional && udpflow.balanced_directions && udpflow.packet_count >= 20 && udpflow.large_packet_count >= 8 && udpflow.large_packet_ratio >= 0.30 && quic.req.alpn != nil && ("h3" in quic.req.alpn || "h3-29" in quic.req.alpn)
+
+- name: tls-suspicious-ja3
+  log: true
+  severity: medium
+  expr: suspicious_ja3(tls.req.ja3_hash)
+
+- name: tls-suspicious-ja4
+  log: true
+  severity: medium
+  expr: suspicious_ja4(tls.req.ja4)
+
+- name: quic-suspicious-ja3
+  log: true
+  severity: medium
+  expr: suspicious_quic_ja3(quic.req.ja3_hash)
+
+- name: quic-suspicious-ja4
+  log: true
+  severity: medium
+  expr: suspicious_quic_ja4(quic.req.ja4)
+
+- name: tls-proxy-domain-observed
+  log: true
+  severity: medium
+  expr: tls.req.sni != nil && tls.req.sni matches "(?i)(v2ray|xray|clash|mihomo|hysteria|tuic|trojan|shadowsocks|sing-box|reality|shadowtls|anytls|masque)"
+
+- name: tls-vless-reality-domain-weak-signal
+  log: true
+  severity: medium
+  expr: tls.req.sni != nil && tls.req.sni matches "(?i)(vless|xray|xtls|reality)"
+
+- name: tls-shadowtls-anytls-domain-weak-signal
+  log: true
+  severity: medium
+  expr: tls.req.sni != nil && tls.req.sni matches "(?i)(shadowtls|anytls|sing-box)"
+
+- name: dns-udp-proxy-domain-observed
+  log: true
+  severity: medium
+  expr: dns.questions != nil && len(dns.questions) > 0 && dns.questions[0].name matches "(?i)(v2ray|xray|clash|mihomo|hysteria|tuic|trojan|shadowsocks|sing-box|reality|shadowtls|anytls|masque)"
+
+- name: dns-vless-reality-domain-weak-signal
+  log: true
+  severity: medium
+  expr: dns.questions != nil && len(dns.questions) > 0 && dns.questions[0].name matches "(?i)(vless|xray|xtls|reality)"
+
+- name: dns-shadowtls-anytls-domain-weak-signal
+  log: true
+  severity: medium
+  expr: dns.questions != nil && len(dns.questions) > 0 && dns.questions[0].name matches "(?i)(shadowtls|anytls|sing-box)"
+
+- name: dns-tcp-proxy-domain-observed
+  log: true
+  severity: medium
+  expr: dns.req.questions != nil && len(dns.req.questions) > 0 && dns.req.questions[0].name matches "(?i)(v2ray|xray|clash|mihomo|hysteria|tuic|trojan|shadowsocks|sing-box|reality|shadowtls|anytls|masque)"
+
+- name: dns-tcp-vless-reality-domain-weak-signal
+  log: true
+  severity: medium
+  expr: dns.req.questions != nil && len(dns.req.questions) > 0 && dns.req.questions[0].name matches "(?i)(vless|xray|xtls|reality)"
+
+- name: dns-tcp-shadowtls-anytls-domain-weak-signal
+  log: true
+  severity: medium
+  expr: dns.req.questions != nil && len(dns.req.questions) > 0 && dns.req.questions[0].name matches "(?i)(shadowtls|anytls|sing-box)"

@@ -1,0 +1,31 @@
+[Unit]
+Description=OpenGFW OVS mirror VPN/proxy detection
+Documentation=file:/etc/opengfw/ovs-mirror-detection.md
+Wants=network-online.target
+After=network-online.target openvswitch-switch.service ovs-vswitchd.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/etc/opengfw
+ExecStart=/usr/local/bin/OpenGFW --config /etc/opengfw/config.yaml --log-format json /etc/opengfw/rules.yaml
+Restart=on-failure
+RestartSec=5s
+
+# AF_PACKET capture needs CAP_NET_RAW. Libvirt identity enrichment needs virsh
+# and libvirt socket access when enabled. OVS response is disabled by default;
+# if enabled, make sure this service user can run ovs-ofctl against the target
+# OVS bridge.
+AmbientCapabilities=CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_RAW
+NoNewPrivileges=true
+
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=multi-user.target

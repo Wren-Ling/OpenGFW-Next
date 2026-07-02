@@ -1,0 +1,25 @@
+entries:
+  - id: vm-100
+    name: build-agent-01
+    tenant: engineering
+    macs:
+      - "52:54:00:00:00:01"
+    ips:
+      - "192.0.2.10"
+      - "2001:db8:100::/64"
+    interfaces:
+      - ogfw-mon0
+    vlans:
+      - "100"
+    labels:
+      owner: ci
+      environment: lab
+
+  - id: vm-101
+    name: test-desktop-01
+    tenant: security-lab
+    macs:
+      # MACs are normalized, so colon, dash, dot and uppercase forms all match.
+      - "52-54-00-00-00-02"
+    ips:
+      - "192.0.2.11/32"
