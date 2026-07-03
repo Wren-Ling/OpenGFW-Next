@@ -3,13 +3,16 @@ io:
   # This mode observes traffic and ignores allow/block verdicts.
   mode: afpacket
   interface: ogfw-mon0
-  frameSize: 65536
-  blockSize: 1048576
-  numBlocks: 128
-  pollTimeout: 500ms
+  # 0 uses backend-specific defaults. Raw socket keeps a large read buffer;
+  # TPACKET_V3 ring defaults favor high PPS non-jumbo traffic.
+  frameSize: 0
+  blockSize: 0
+  numBlocks: 0
+  # For ring=true this maps to TPACKET_V3 retire_blk_tov.
+  pollTimeout: 0s
   # Optional TPACKET_V3 mmap ring backend for higher PPS Linux captures.
-  # Keep false unless the host has been tested with the selected block/frame
-  # sizes and CAP_NET_RAW permissions.
+  # Keep false unless the host has been tested with CAP_NET_RAW permissions,
+  # packet drop metrics, and the local stress test described in the docs.
   ring: false
   # Optional PACKET_FANOUT for multiple OpenGFW processes/sockets on one host.
   # Use the same group and type on every participant.
@@ -52,32 +55,52 @@ allowlist:
   webhookSuppressed: false
 
 fingerprints:
-  # Fill these lists with suspicious JA3/JA4 fingerprints observed and validated
-  # in your own environment. Empty lists simply make those rules not match.
+  # Load suspicious JA3/JA4 fingerprints observed and validated in your own
+  # environment. Empty lists simply make those rules not match. Do not use
+  # public placeholder hashes directly in production.
   ja3:
+    files:
+      - fingerprints/ja3.yaml
     suspicious: []
-    # - hash: "replace-with-real-tls-ja3-md5"
-    #   name: "utls-chrome-randomized-example"
-    #   severity: medium
-    #   tags: ["utls", "proxy"]
   ja4:
+    files:
+      - fingerprints/ja4.yaml
     suspicious: []
-    # - hash: "replace-with-real-tls-ja4"
-    #   name: "tls-ja4-proxy-example"
-    #   severity: medium
-    #   tags: ["ja4", "proxy"]
   quicJa3:
+    files:
+      - fingerprints/quic-ja3.yaml
     suspicious: []
-    # - hash: "replace-with-real-quic-ja3-md5"
-    #   name: "quic-proxy-example"
-    #   severity: medium
-    #   tags: ["quic", "proxy"]
   quicJa4:
+    files:
+      - fingerprints/quic-ja4.yaml
     suspicious: []
-    # - hash: "replace-with-real-quic-ja4"
-    #   name: "quic-ja4-proxy-example"
-    #   severity: medium
-    #   tags: ["quic", "ja4", "proxy"]
+
+domainKeywords:
+  # Keywords used by domain_keyword(value, listName) in the example rules.
+  # Keep these lists local and reviewed; a keyword match is correlation, not proof.
+  proxy:
+    - v2ray
+    - xray
+    - clash
+    - mihomo
+    - hysteria
+    - tuic
+    - trojan
+    - shadowsocks
+    - sing-box
+    - reality
+    - shadowtls
+    - anytls
+    - masque
+  vlessReality:
+    - vless
+    - xray
+    - xtls
+    - reality
+  shadowTLSAnyTLS:
+    - shadowtls
+    - anytls
+    - sing-box
 
 metrics:
   # Disabled by default. Exposes Prometheus text metrics when enabled,
@@ -85,6 +108,11 @@ metrics:
   enabled: false
   listen: 127.0.0.1:9090
   path: /metrics
+  # Packet IO stats are also sampled for warn logs. The warn threshold is the
+  # per-sample drop ratio, drops/(packets+drops). Set a higher value only after
+  # validating the ring with local high PPS traffic.
+  packetStatsInterval: 30s
+  packetDropWarnRate: 0.01
 
 identity:
   # Optional static VM inventory. Matched fields are added to meta as vm.*.
@@ -106,21 +134,21 @@ risk:
   window: 10m
   thresholds:
     # Send a webhook event with type=risk when the score crosses this value.
-    alert: 8
+    alert: 9
     # Trigger OVS quarantine only when the score crosses this value.
-    response: 12
+    response: 16
   weights:
     vpn-wireguard: 6
     vpn-openvpn: 6
     proxy-trojan-heuristic: 5
     proxy-fully-encrypted-tcp: 4
-    proxy-socks: 3
+    proxy-socks: 4
     tls-ech-observed: 1
     quic-ech-observed: 1
-    udp443-long-lived-no-quic-sni: 1
-    hysteria2-quic-like-weak-signal: 2
+    udp443-long-lived-no-quic-sni: 0
+    hysteria2-quic-like-weak-signal: 3
     hysteria2-custom-udp-weak-signal: 1
-    tuic-quic-like-weak-signal: 2
+    tuic-quic-like-weak-signal: 3
     tuic-short-quic-burst-weak-signal: 1
     masque-connect-udp-weak-signal: 1
     tls-suspicious-ja3: 3

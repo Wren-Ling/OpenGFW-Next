@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -84,6 +86,92 @@ fingerprints:
 
 	rs.Match(ruleset.StreamInfo{})
 	if got, want := strings.Join(logger.logs, ","), "tls-ja3-fingerprint,tls-ja4-fingerprint,quic-ja3-fingerprint,quic-ja4-fingerprint"; got != want {
+		t.Fatalf("logged rules = %q, want %q", got, want)
+	}
+}
+
+func TestFingerprintConfigLoadsExternalFilesAndMatches(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "fingerprints"), 0755); err != nil {
+		t.Fatalf("Mkdir() error = %v", err)
+	}
+	ja3Path := filepath.Join(dir, "fingerprints", "ja3.yaml")
+	if err := os.WriteFile(ja3Path, []byte(`
+suspicious:
+  - hash: "ABCDEF0123456789ABCDEF0123456789"
+    name: "mihomo-lab-ja3"
+    severity: medium
+    tags: ["mihomo", "lab"]
+`), 0644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	quicJA4Path := filepath.Join(dir, "fingerprints", "quic-ja4.yaml")
+	if err := os.WriteFile(quicJA4Path, []byte(`
+fingerprints:
+  quicJa4:
+    suspicious:
+      - hash: "Q13D0308P0_55B375C5D22E_F0736A66FA6B"
+        name: "xray-reality-quic-ja4"
+        severity: medium
+`), 0644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	configPath := filepath.Join(dir, "config.yaml")
+	v := viper.New()
+	v.SetConfigType("yaml")
+	if err := v.ReadConfig(strings.NewReader(`
+fingerprints:
+  ja3:
+    files:
+      - fingerprints/ja3.yaml
+  quicJa4:
+    files:
+      - fingerprints/quic-ja4.yaml
+`)); err != nil {
+		t.Fatalf("ReadConfig() error = %v", err)
+	}
+	var config cliConfig
+	if err := v.Unmarshal(&config); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if err := config.loadExternalDatasets(configPath); err != nil {
+		t.Fatalf("loadExternalDatasets() error = %v", err)
+	}
+
+	logger := &fingerprintConfigTestLogger{}
+	rs, err := ruleset.CompileExprRules([]ruleset.ExprRule{
+		{
+			Name:     "external-ja3-hit",
+			Log:      true,
+			Severity: "medium",
+			Expr:     `suspicious_ja3("abcdef0123456789abcdef0123456789")`,
+		},
+		{
+			Name:     "external-ja3-miss",
+			Log:      true,
+			Severity: "medium",
+			Expr:     `suspicious_ja3("00000000000000000000000000000000")`,
+		},
+		{
+			Name:     "external-quic-ja4-hit",
+			Log:      true,
+			Severity: "medium",
+			Expr:     `suspicious_quic_ja4("q13d0308p0_55b375c5d22e_f0736a66fa6b")`,
+		},
+	}, analyzers, modifiers, &ruleset.BuiltinConfig{
+		Logger:     logger,
+		GeoMatcher: geo.NewGeoMatcher("", ""),
+		ProtectedDialContext: func(context.Context, string, string) (net.Conn, error) {
+			return nil, errors.New("protected dial is disabled in tests")
+		},
+		Fingerprints: config.Fingerprints,
+	})
+	if err != nil {
+		t.Fatalf("CompileExprRules() error = %v", err)
+	}
+
+	rs.Match(ruleset.StreamInfo{})
+	if got, want := strings.Join(logger.logs, ","), "external-ja3-hit,external-quic-ja4-hit"; got != want {
 		t.Fatalf("logged rules = %q, want %q", got, want)
 	}
 }

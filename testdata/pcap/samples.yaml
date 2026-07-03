@@ -1,0 +1,127 @@
+# Manifest for private/local PCAP replay regression samples.
+#
+# Real PCAP files are not committed. Place sanitized captures next to this file
+# using the filenames below, or point OPENGFW_PCAP_MANIFEST at a local manifest.
+# Missing PCAP files are skipped by cmd/pcap_replay_test.go.
+samples:
+  - name: mihomo-socks-baseline
+    pcap: mihomo-socks-baseline.pcap
+    expectRules:
+      - proxy-socks
+    allowedRules:
+      - dns-udp-proxy-domain-observed
+      - dns-tcp-proxy-domain-observed
+      - tls-proxy-domain-observed
+      - tls-suspicious-ja3
+      - tls-suspicious-ja4
+    expectMinScore: 4
+    expectMaxScore: 12
+
+  - name: clash-socks-baseline
+    pcap: clash-socks-baseline.pcap
+    expectRules:
+      - proxy-socks
+    allowedRules:
+      - dns-udp-proxy-domain-observed
+      - dns-tcp-proxy-domain-observed
+      - tls-proxy-domain-observed
+      - tls-suspicious-ja3
+      - tls-suspicious-ja4
+    expectMinScore: 4
+    expectMaxScore: 12
+
+  - name: v2ray-xray-vless-reality
+    pcap: v2ray-xray-vless-reality.pcap
+    expectRules:
+      - tls-vless-reality-domain-weak-signal
+    allowedRules:
+      - dns-udp-proxy-domain-observed
+      - dns-vless-reality-domain-weak-signal
+      - dns-tcp-proxy-domain-observed
+      - dns-tcp-vless-reality-domain-weak-signal
+      - tls-ech-observed
+      - tls-proxy-domain-observed
+      - tls-suspicious-ja3
+      - tls-suspicious-ja4
+    expectMinScore: 3
+    expectMaxScore: 14
+
+  - name: sing-box-shadowtls-anytls
+    pcap: sing-box-shadowtls-anytls.pcap
+    expectRules:
+      - tls-shadowtls-anytls-domain-weak-signal
+    allowedRules:
+      - dns-udp-proxy-domain-observed
+      - dns-shadowtls-anytls-domain-weak-signal
+      - dns-tcp-proxy-domain-observed
+      - dns-tcp-shadowtls-anytls-domain-weak-signal
+      - tls-ech-observed
+      - tls-proxy-domain-observed
+      - tls-suspicious-ja3
+      - tls-suspicious-ja4
+    expectMinScore: 3
+    expectMaxScore: 14
+
+  - name: hysteria2-quic-auth
+    pcap: hysteria2-quic-auth.pcap
+    expectRules:
+      - hysteria2-quic-like-weak-signal
+    allowedRules:
+      - quic-ech-observed
+      - quic-suspicious-ja3
+      - quic-suspicious-ja4
+      - udp443-long-lived-no-quic-sni
+    expectMinScore: 3
+    expectMaxScore: 12
+
+  - name: hysteria2-custom-udp-auth
+    pcap: hysteria2-custom-udp-auth.pcap
+    expectRules:
+      - hysteria2-custom-udp-weak-signal
+    allowedRules:
+      - quic-suspicious-ja3
+      - quic-suspicious-ja4
+    expectMinScore: 1
+    expectMaxScore: 8
+
+  - name: tuic-quic-auth
+    pcap: tuic-quic-auth.pcap
+    expectRules:
+      - tuic-quic-like-weak-signal
+    allowedRules:
+      - quic-ech-observed
+      - quic-suspicious-ja3
+      - quic-suspicious-ja4
+      - tuic-short-quic-burst-weak-signal
+      - udp443-long-lived-no-quic-sni
+    expectMinScore: 3
+    expectMaxScore: 12
+
+  - name: normal-http3-browsing-control
+    pcap: normal-http3-browsing-control.pcap
+    expectRules: []
+    allowedRules:
+      - masque-connect-udp-weak-signal
+      - quic-ech-observed
+    allowNoHits: true
+    expectMinScore: 0
+    expectMaxScore: 2
+
+  - name: normal-game-udp-control
+    pcap: normal-game-udp-control.pcap
+    expectRules: []
+    allowedRules:
+      - hysteria2-custom-udp-weak-signal
+    allowNoHits: true
+    expectMinScore: 0
+    expectMaxScore: 1
+
+  - name: normal-voice-video-control
+    pcap: normal-voice-video-control.pcap
+    expectRules: []
+    allowedRules:
+      - hysteria2-custom-udp-weak-signal
+      - udp443-long-lived-no-quic-sni
+    allowNoHits: true
+    expectMinScore: 0
+    expectMaxScore: 1

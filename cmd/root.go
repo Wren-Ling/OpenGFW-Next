@@ -168,17 +168,18 @@ func initLogger() {
 }
 
 type cliConfig struct {
-	IO           cliConfigIO               `mapstructure:"io"`
-	Workers      cliConfigWorkers          `mapstructure:"workers"`
-	Ruleset      cliConfigRuleset          `mapstructure:"ruleset"`
-	Replay       cliConfigReplay           `mapstructure:"replay"`
-	Alert        cliConfigAlert            `mapstructure:"alert"`
-	Identity     cliConfigIdentity         `mapstructure:"identity"`
-	Metrics      cliConfigMetrics          `mapstructure:"metrics"`
-	Risk         cliConfigRisk             `mapstructure:"risk"`
-	Response     cliConfigResponse         `mapstructure:"response"`
-	Allowlist    cliConfigAllowlist        `mapstructure:"allowlist"`
-	Fingerprints ruleset.FingerprintConfig `mapstructure:"fingerprints"`
+	IO             cliConfigIO                 `mapstructure:"io"`
+	Workers        cliConfigWorkers            `mapstructure:"workers"`
+	Ruleset        cliConfigRuleset            `mapstructure:"ruleset"`
+	Replay         cliConfigReplay             `mapstructure:"replay"`
+	Alert          cliConfigAlert              `mapstructure:"alert"`
+	Identity       cliConfigIdentity           `mapstructure:"identity"`
+	Metrics        cliConfigMetrics            `mapstructure:"metrics"`
+	Risk           cliConfigRisk               `mapstructure:"risk"`
+	Response       cliConfigResponse           `mapstructure:"response"`
+	Allowlist      cliConfigAllowlist          `mapstructure:"allowlist"`
+	Fingerprints   ruleset.FingerprintConfig   `mapstructure:"fingerprints"`
+	DomainKeywords ruleset.DomainKeywordConfig `mapstructure:"domainKeywords"`
 
 	identityEnricher *identityEnricher
 	metrics          *metricsCollector
@@ -257,16 +258,7 @@ func (c *cliConfig) fillIO(config *engine.Config) error {
 		})
 	} else if strings.EqualFold(c.IO.Mode, "afpacket") {
 		// Setup IO for Linux AF_PACKET capture.
-		logger.Info("using afpacket packet io",
-			zap.String("interface", c.IO.Interface),
-			zap.Int("frameSize", c.IO.FrameSize),
-			zap.Int("blockSize", c.IO.BlockSize),
-			zap.Int("numBlocks", c.IO.NumBlocks),
-			zap.Duration("pollTimeout", c.IO.PollTimeout),
-			zap.Bool("ring", c.IO.Ring),
-			zap.Any("fanoutGroup", c.IO.FanoutGroup),
-			zap.String("fanoutType", c.IO.FanoutType))
-		ioImpl, err = io.NewAFPacketPacketIO(io.AFPacketIOConfig{
+		afpacketConfig := io.NormalizeAFPacketIOConfig(io.AFPacketIOConfig{
 			Interface:   c.IO.Interface,
 			FrameSize:   c.IO.FrameSize,
 			BlockSize:   c.IO.BlockSize,
@@ -276,6 +268,30 @@ func (c *cliConfig) fillIO(config *engine.Config) error {
 			FanoutGroup: c.IO.FanoutGroup,
 			FanoutType:  c.IO.FanoutType,
 		})
+		if afpacketConfig.Ring {
+			advice, adviceErr := io.AFPacketRingConfigAdviceFor(afpacketConfig)
+			if adviceErr != nil {
+				return configError{Field: "io", Err: adviceErr}
+			}
+			logger.Info("afpacket tpacket_v3 ring sizing",
+				zap.Int("framesPerBlock", advice.FramesPerBlock),
+				zap.Int("frameCount", advice.FrameCount),
+				zap.Int("totalBytes", advice.TotalBytes),
+				zap.Duration("retireBlockTimeout", advice.RetireBlockTimeout))
+			for _, warning := range advice.Warnings {
+				logger.Warn("afpacket tpacket_v3 ring sizing recommendation", zap.String("recommendation", warning))
+			}
+		}
+		logger.Info("using afpacket packet io",
+			zap.String("interface", afpacketConfig.Interface),
+			zap.Int("frameSize", afpacketConfig.FrameSize),
+			zap.Int("blockSize", afpacketConfig.BlockSize),
+			zap.Int("numBlocks", afpacketConfig.NumBlocks),
+			zap.Duration("pollTimeout", afpacketConfig.PollTimeout),
+			zap.Bool("ring", afpacketConfig.Ring),
+			zap.Any("fanoutGroup", afpacketConfig.FanoutGroup),
+			zap.String("fanoutType", afpacketConfig.FanoutType))
+		ioImpl, err = io.NewAFPacketPacketIO(afpacketConfig)
 	} else {
 		err = fmt.Errorf("unsupported mode %q", c.IO.Mode)
 	}
@@ -343,6 +359,9 @@ func runMain(cmd *cobra.Command, args []string) {
 	if err := viper.Unmarshal(&config); err != nil {
 		logger.Fatal("failed to parse config", zap.Error(err))
 	}
+	if err := config.loadExternalDatasets(viper.ConfigFileUsed()); err != nil {
+		logger.Fatal("failed to load external datasets", zap.Error(err))
+	}
 	metricsEndpoint, err := newMetricsEndpoint(config.Metrics)
 	if err != nil {
 		logger.Fatal("failed to initialize metrics endpoint", zap.Error(err))
@@ -351,6 +370,9 @@ func runMain(cmd *cobra.Command, args []string) {
 		defer metricsEndpoint.Close()
 	}
 	config.metrics = metricsEndpoint.Collector()
+	if config.metrics == nil {
+		config.metrics = &metricsCollector{}
+	}
 	engineConfig, err := config.Config()
 	if err != nil {
 		logger.Fatal("failed to parse config", zap.Error(err))
@@ -394,6 +416,7 @@ func runMain(cmd *cobra.Command, args []string) {
 		GeoMatcher:           geo.NewGeoMatcher(config.Ruleset.GeoSite, config.Ruleset.GeoIp),
 		ProtectedDialContext: engineConfig.IO.ProtectedDialContext,
 		Fingerprints:         config.Fingerprints,
+		DomainKeywords:       config.DomainKeywords,
 	}
 	rs, err := ruleset.CompileExprRules(rawRs, analyzers, modifiers, rsConfig)
 	if err != nil {
@@ -409,6 +432,7 @@ func runMain(cmd *cobra.Command, args []string) {
 
 	// Signal handling
 	ctx, cancelFunc := context.WithCancel(context.Background())
+	config.metrics.StartPacketIOStatsMonitor(ctx, config.Metrics)
 	go func() {
 		// Graceful shutdown
 		shutdownChan := make(chan os.Signal, 1)

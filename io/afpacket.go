@@ -18,10 +18,14 @@ import (
 )
 
 const (
-	afpacketDefaultFrameSize   = 65536
-	afpacketDefaultBlockSize   = 1 << 20
-	afpacketDefaultNumBlocks   = 64
-	afpacketDefaultPollTimeout = 500 * time.Millisecond
+	afpacketDefaultFrameSize       = 65536
+	afpacketDefaultBlockSize       = 1 << 20
+	afpacketDefaultNumBlocks       = 64
+	afpacketDefaultPollTimeout     = 500 * time.Millisecond
+	afpacketDefaultRingFrameSize   = 2048
+	afpacketDefaultRingBlockSize   = 4 << 20
+	afpacketDefaultRingNumBlocks   = 64
+	afpacketDefaultRingPollTimeout = 50 * time.Millisecond
 )
 
 var _ PacketIO = (*afPacketIO)(nil)
@@ -68,25 +72,24 @@ type afPacketRingBackend struct {
 	pollTimeoutMS int
 	kernelPackets atomic.Uint64
 	kernelDrops   atomic.Uint64
+	losingBlocks  atomic.Uint64
 	readErrors    atomic.Uint64
+}
+
+type AFPacketRingConfigAdvice struct {
+	Config             AFPacketIOConfig
+	FramesPerBlock     int
+	FrameCount         int
+	TotalBytes         int
+	RetireBlockTimeout time.Duration
+	Warnings           []string
 }
 
 func NewAFPacketPacketIO(config AFPacketIOConfig) (PacketIO, error) {
 	if config.Interface == "" {
 		return nil, errors.New("interface is required")
 	}
-	if config.FrameSize <= 0 {
-		config.FrameSize = afpacketDefaultFrameSize
-	}
-	if config.BlockSize <= 0 {
-		config.BlockSize = afpacketDefaultBlockSize
-	}
-	if config.NumBlocks <= 0 {
-		config.NumBlocks = afpacketDefaultNumBlocks
-	}
-	if config.PollTimeout <= 0 {
-		config.PollTimeout = afpacketDefaultPollTimeout
-	}
+	config = NormalizeAFPacketIOConfig(config)
 
 	iface, err := net.InterfaceByName(config.Interface)
 	if err != nil {
@@ -216,6 +219,9 @@ func (b *afPacketRingBackend) processAvailableBlocks(cb PacketCallback, blockInd
 		status := atomic.LoadUint32(&hdr.Block_status)
 		if status&unix.TP_STATUS_USER == 0 {
 			continue
+		}
+		if status&unix.TP_STATUS_LOSING != 0 {
+			b.losingBlocks.Add(1)
 		}
 		processed = true
 		if !b.processBlock(cb, block, hdr) {
@@ -391,9 +397,10 @@ func (b *afPacketRingBackend) Stats() PacketIOStats {
 		b.kernelDrops.Add(drops)
 	}
 	return PacketIOStats{
-		Packets:    b.kernelPackets.Load(),
-		Drops:      b.kernelDrops.Load(),
-		ReadErrors: b.readErrors.Load(),
+		Packets:          b.kernelPackets.Load(),
+		Drops:            b.kernelDrops.Load(),
+		ReadErrors:       b.readErrors.Load(),
+		RingLosingBlocks: b.losingBlocks.Load(),
 	}
 }
 
@@ -481,6 +488,70 @@ func newAFPacketRingBackend(fd int, parent *afPacketIO, config AFPacketIOConfig)
 		numBlocks:     config.NumBlocks,
 		pollTimeoutMS: int(config.PollTimeout / time.Millisecond),
 	}, nil
+}
+
+func NormalizeAFPacketIOConfig(config AFPacketIOConfig) AFPacketIOConfig {
+	if config.Ring {
+		if config.FrameSize <= 0 {
+			config.FrameSize = afpacketDefaultRingFrameSize
+		}
+		if config.BlockSize <= 0 {
+			config.BlockSize = afpacketDefaultRingBlockSize
+		}
+		if config.NumBlocks <= 0 {
+			config.NumBlocks = afpacketDefaultRingNumBlocks
+		}
+		if config.PollTimeout <= 0 {
+			config.PollTimeout = afpacketDefaultRingPollTimeout
+		}
+		return config
+	}
+	if config.FrameSize <= 0 {
+		config.FrameSize = afpacketDefaultFrameSize
+	}
+	if config.BlockSize <= 0 {
+		config.BlockSize = afpacketDefaultBlockSize
+	}
+	if config.NumBlocks <= 0 {
+		config.NumBlocks = afpacketDefaultNumBlocks
+	}
+	if config.PollTimeout <= 0 {
+		config.PollTimeout = afpacketDefaultPollTimeout
+	}
+	return config
+}
+
+func AFPacketRingConfigAdviceFor(config AFPacketIOConfig) (AFPacketRingConfigAdvice, error) {
+	config.Ring = true
+	config = NormalizeAFPacketIOConfig(config)
+	if err := validateAFPacketRingConfig(config); err != nil {
+		return AFPacketRingConfigAdvice{}, err
+	}
+	framesPerBlock := config.BlockSize / config.FrameSize
+	frameCount := config.NumBlocks * framesPerBlock
+	advice := AFPacketRingConfigAdvice{
+		Config:             config,
+		FramesPerBlock:     framesPerBlock,
+		FrameCount:         frameCount,
+		TotalBytes:         config.BlockSize * config.NumBlocks,
+		RetireBlockTimeout: config.PollTimeout,
+	}
+	if framesPerBlock < 64 {
+		advice.Warnings = append(advice.Warnings, fmt.Sprintf("frames per block is %d; use a larger blockSize or smaller frameSize for high PPS capture", framesPerBlock))
+	}
+	if config.FrameSize > 4096 {
+		advice.Warnings = append(advice.Warnings, fmt.Sprintf("frameSize is %d; 2048 or 4096 is usually better for high PPS non-jumbo traffic", config.FrameSize))
+	}
+	if advice.TotalBytes < 128<<20 {
+		advice.Warnings = append(advice.Warnings, fmt.Sprintf("ring buffer is %d MiB; consider at least 128 MiB for bursty high PPS mirrors", advice.TotalBytes>>20))
+	}
+	if config.PollTimeout > 100*time.Millisecond {
+		advice.Warnings = append(advice.Warnings, fmt.Sprintf("retire_blk_tov is %s; 10-50ms usually lowers latency and block pressure under high PPS", config.PollTimeout))
+	}
+	if config.PollTimeout < time.Millisecond {
+		advice.Warnings = append(advice.Warnings, fmt.Sprintf("retire_blk_tov is %s; very small values increase wakeups and CPU overhead", config.PollTimeout))
+	}
+	return advice, nil
 }
 
 func validateAFPacketRingConfig(config AFPacketIOConfig) error {

@@ -111,6 +111,7 @@ type BuiltinConfig struct {
 	GeoMatcher           *geo.GeoMatcher
 	ProtectedDialContext func(ctx context.Context, network, address string) (net.Conn, error)
 	Fingerprints         FingerprintConfig
+	DomainKeywords       DomainKeywordConfig
 }
 
 type FingerprintConfig struct {
@@ -121,8 +122,11 @@ type FingerprintConfig struct {
 }
 
 type FingerprintSet struct {
+	Files      []string           `mapstructure:"files" yaml:"files"`
 	Suspicious []FingerprintEntry `mapstructure:"suspicious" yaml:"suspicious"`
 }
+
+type DomainKeywordConfig map[string][]string
 
 type FingerprintEntry struct {
 	Hash     string   `mapstructure:"hash" yaml:"hash"`

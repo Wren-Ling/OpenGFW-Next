@@ -98,44 +98,44 @@
 - name: tls-proxy-domain-observed
   log: true
   severity: medium
-  expr: tls.req.sni != nil && tls.req.sni matches "(?i)(v2ray|xray|clash|mihomo|hysteria|tuic|trojan|shadowsocks|sing-box|reality|shadowtls|anytls|masque)"
+  expr: domain_keyword(tls.req.sni, "proxy")
 
 - name: tls-vless-reality-domain-weak-signal
   log: true
   severity: medium
-  expr: tls.req.sni != nil && tls.req.sni matches "(?i)(vless|xray|xtls|reality)"
+  expr: domain_keyword(tls.req.sni, "vlessReality")
 
 - name: tls-shadowtls-anytls-domain-weak-signal
   log: true
   severity: medium
-  expr: tls.req.sni != nil && tls.req.sni matches "(?i)(shadowtls|anytls|sing-box)"
+  expr: domain_keyword(tls.req.sni, "shadowTLSAnyTLS")
 
 - name: dns-udp-proxy-domain-observed
   log: true
   severity: medium
-  expr: dns.questions != nil && len(dns.questions) > 0 && dns.questions[0].name matches "(?i)(v2ray|xray|clash|mihomo|hysteria|tuic|trojan|shadowsocks|sing-box|reality|shadowtls|anytls|masque)"
+  expr: dns.questions != nil && len(dns.questions) > 0 && domain_keyword(dns.questions[0].name, "proxy")
 
 - name: dns-vless-reality-domain-weak-signal
   log: true
   severity: medium
-  expr: dns.questions != nil && len(dns.questions) > 0 && dns.questions[0].name matches "(?i)(vless|xray|xtls|reality)"
+  expr: dns.questions != nil && len(dns.questions) > 0 && domain_keyword(dns.questions[0].name, "vlessReality")
 
 - name: dns-shadowtls-anytls-domain-weak-signal
   log: true
   severity: medium
-  expr: dns.questions != nil && len(dns.questions) > 0 && dns.questions[0].name matches "(?i)(shadowtls|anytls|sing-box)"
+  expr: dns.questions != nil && len(dns.questions) > 0 && domain_keyword(dns.questions[0].name, "shadowTLSAnyTLS")
 
 - name: dns-tcp-proxy-domain-observed
   log: true
   severity: medium
-  expr: dns.req.questions != nil && len(dns.req.questions) > 0 && dns.req.questions[0].name matches "(?i)(v2ray|xray|clash|mihomo|hysteria|tuic|trojan|shadowsocks|sing-box|reality|shadowtls|anytls|masque)"
+  expr: dns.req.questions != nil && len(dns.req.questions) > 0 && domain_keyword(dns.req.questions[0].name, "proxy")
 
 - name: dns-tcp-vless-reality-domain-weak-signal
   log: true
   severity: medium
-  expr: dns.req.questions != nil && len(dns.req.questions) > 0 && dns.req.questions[0].name matches "(?i)(vless|xray|xtls|reality)"
+  expr: dns.req.questions != nil && len(dns.req.questions) > 0 && domain_keyword(dns.req.questions[0].name, "vlessReality")
 
 - name: dns-tcp-shadowtls-anytls-domain-weak-signal
   log: true
   severity: medium
-  expr: dns.req.questions != nil && len(dns.req.questions) > 0 && dns.req.questions[0].name matches "(?i)(shadowtls|anytls|sing-box)"
+  expr: dns.req.questions != nil && len(dns.req.questions) > 0 && domain_keyword(dns.req.questions[0].name, "shadowTLSAnyTLS")

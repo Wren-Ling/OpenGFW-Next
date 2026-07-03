@@ -167,6 +167,50 @@ func TestSuspiciousQUICJA4BuiltinMatchesConfiguredFingerprints(t *testing.T) {
 	}
 }
 
+func TestDomainKeywordBuiltinMatchesConfiguredLists(t *testing.T) {
+	logger := &recordingRulesetLogger{}
+	rs, err := CompileExprRules([]ExprRule{
+		{
+			Name:     "proxy-domain-hit",
+			Log:      true,
+			Severity: "medium",
+			Expr:     `domain_keyword("cdn.MIHOMO-lab.example.", "proxy")`,
+		},
+		{
+			Name:     "proxy-domain-miss",
+			Log:      true,
+			Severity: "medium",
+			Expr:     `domain_keyword("www.example.com", "proxy")`,
+		},
+		{
+			Name:     "nil-domain-miss",
+			Log:      true,
+			Severity: "medium",
+			Expr:     `domain_keyword(nil, "proxy")`,
+		},
+	}, nil, nil, &BuiltinConfig{
+		Logger:     logger,
+		GeoMatcher: geo.NewGeoMatcher("", ""),
+		ProtectedDialContext: func(context.Context, string, string) (net.Conn, error) {
+			return nil, errors.New("protected dial is disabled in tests")
+		},
+		DomainKeywords: DomainKeywordConfig{
+			"proxy": []string{"mihomo", "xray"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CompileExprRules() error = %v", err)
+	}
+
+	rs.Match(StreamInfo{})
+	if len(logger.logs) != 1 {
+		t.Fatalf("logs = %d, want 1", len(logger.logs))
+	}
+	if logger.logs[0] != "proxy-domain-hit" {
+		t.Fatalf("logged rule = %q, want proxy-domain-hit", logger.logs[0])
+	}
+}
+
 func testBuiltinConfig(logger Logger, fingerprints FingerprintConfig) *BuiltinConfig {
 	return &BuiltinConfig{
 		Logger:     logger,

@@ -24,9 +24,10 @@ func TestMetricsCollectorRender(t *testing.T) {
 	m.IncStream("udp")
 	m.IncRiskEvent("high\"risk\nline")
 	m.packetIO = fakePacketStatsProvider{stats: opengfwio.PacketIOStats{
-		Packets:    100,
-		Drops:      7,
-		ReadErrors: 2,
+		Packets:          100,
+		Drops:            7,
+		ReadErrors:       2,
+		RingLosingBlocks: 3,
 	}}
 	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
 	m.SetRiskAggregator(&riskAggregator{
@@ -59,10 +60,14 @@ func TestMetricsCollectorRender(t *testing.T) {
 		"opengfw_streams_total{proto=\"udp\"} 2",
 		"opengfw_packet_kernel_packets_total 100",
 		"opengfw_packet_kernel_drops_total 7",
+		"opengfw_packet_kernel_drop_rate 0.0654205607",
 		"opengfw_packet_read_errors_total 2",
+		"opengfw_packet_ring_losing_blocks_total 3",
 		"opengfw_packetio_packets_total 100",
 		"opengfw_packetio_drops_total 7",
+		"opengfw_packetio_drop_rate 0.0654205607",
 		"opengfw_packetio_read_errors_total 2",
+		"opengfw_packetio_ring_losing_blocks_total 3",
 		"# TYPE opengfw_risk_buckets gauge",
 		"opengfw_risk_buckets 1",
 		"opengfw_risk_events_total{severity=\"high\\\"risk\\nline\"} 1",

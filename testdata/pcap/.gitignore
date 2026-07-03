@@ -1,0 +1,9 @@
+*.pcap
+*.pcapng
+*.cap
+captures/
+raw/
+sanitized/
+!README.md
+!samples.yaml
+!.gitignore

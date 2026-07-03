@@ -19,7 +19,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const defaultPCAPSampleManifest = "testdata/pcap/samples.yaml"
+const defaultPCAPSampleManifest = "../testdata/pcap/samples.yaml"
 
 type pcapSampleManifest struct {
 	Samples []pcapSample `yaml:"samples"`
@@ -72,6 +72,7 @@ func TestExampleRulesWithPCAPManifest(t *testing.T) {
 	if len(manifest.Samples) == 0 {
 		t.Skipf("pcap sample manifest %s has no samples", manifestPath)
 	}
+	validatePCAPSampleManifest(t, manifestPath, manifest)
 
 	rawRules := loadOVSVPNDetectExampleRules(t)
 	baseDir := filepath.Dir(manifestPath)
@@ -116,6 +117,8 @@ func replayExampleRulesPCAP(t *testing.T, sample string, rawRules []ruleset.Expr
 		ProtectedDialContext: func(context.Context, string, string) (net.Conn, error) {
 			return nil, nil
 		},
+		Fingerprints:   config.Fingerprints,
+		DomainKeywords: config.DomainKeywords,
 	})
 	if err != nil {
 		t.Fatalf("compile example rules: %v", err)
@@ -158,17 +161,46 @@ func loadPCAPSampleManifest(t *testing.T, path string) pcapSampleManifest {
 	return manifest
 }
 
+func validatePCAPSampleManifest(t *testing.T, path string, manifest pcapSampleManifest) {
+	t.Helper()
+
+	for i, sample := range manifest.Samples {
+		if strings.TrimSpace(sample.Name) == "" {
+			t.Fatalf("pcap sample manifest %s sample %d: name is required", path, i)
+		}
+		if strings.TrimSpace(sample.PCAP) == "" {
+			t.Fatalf("pcap sample manifest %s sample %q: pcap is required", path, sample.Name)
+		}
+		if sample.ExpectRules == nil {
+			t.Fatalf("pcap sample manifest %s sample %q: expectRules must be declared", path, sample.Name)
+		}
+		if sample.AllowedRules == nil {
+			t.Fatalf("pcap sample manifest %s sample %q: allowedRules must be declared", path, sample.Name)
+		}
+		if sample.ExpectMinScore == nil {
+			t.Fatalf("pcap sample manifest %s sample %q: expectMinScore is required", path, sample.Name)
+		}
+		if sample.ExpectMaxScore == nil {
+			t.Fatalf("pcap sample manifest %s sample %q: expectMaxScore is required", path, sample.Name)
+		}
+	}
+}
+
 func loadOVSMirrorConfigForPCAPReplay(t *testing.T) cliConfig {
 	t.Helper()
 
 	v := viper.New()
-	v.SetConfigFile(filepath.Join("..", "examples", "ovs-mirror-config.yaml"))
+	configPath := filepath.Join("..", "examples", "ovs-mirror-config.yaml")
+	v.SetConfigFile(configPath)
 	if err := v.ReadInConfig(); err != nil {
 		t.Fatalf("read examples/ovs-mirror-config.yaml: %v", err)
 	}
 	var config cliConfig
 	if err := v.Unmarshal(&config); err != nil {
 		t.Fatalf("parse examples/ovs-mirror-config.yaml: %v", err)
+	}
+	if err := config.loadExternalDatasets(configPath); err != nil {
+		t.Fatalf("load external datasets from examples/ovs-mirror-config.yaml: %v", err)
 	}
 	return config
 }

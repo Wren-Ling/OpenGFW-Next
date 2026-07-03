@@ -58,9 +58,18 @@ type PacketIO interface {
 }
 
 type PacketIOStats struct {
-	Packets    uint64
-	Drops      uint64
-	ReadErrors uint64
+	Packets          uint64
+	Drops            uint64
+	ReadErrors       uint64
+	RingLosingBlocks uint64
+}
+
+func PacketIODropRate(packets, drops uint64) float64 {
+	total := packets + drops
+	if total == 0 {
+		return 0
+	}
+	return float64(drops) / float64(total)
 }
 
 type PacketIOStatsProvider interface {

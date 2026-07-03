@@ -55,10 +55,10 @@ hosts, enable the TPACKET_V3 mmap ring backend with `ring: true`:
 io:
   mode: afpacket
   interface: ogfw-mon0
-  frameSize: 65536
-  blockSize: 1048576
-  numBlocks: 128
-  pollTimeout: 500ms
+  frameSize: 0
+  blockSize: 0
+  numBlocks: 0
+  pollTimeout: 0s
   ring: false
   fanoutGroup: null
   fanoutType: hash
@@ -72,11 +72,63 @@ must be page-size aligned, `frameSize` must be 16-byte aligned, and `blockSize`
 must be divisible by `frameSize`; invalid ring sizing fails at startup instead
 of silently falling back.
 
+Leaving `frameSize`, `blockSize`, `numBlocks`, and `pollTimeout` as zero selects
+backend-specific defaults. The raw socket backend keeps the older large read
+buffer defaults. The TPACKET_V3 backend uses a high-PPS-oriented starting point:
+`frameSize: 2048`, `blockSize: 4194304`, `numBlocks: 64`, and
+`pollTimeout: 50ms` (`retire_blk_tov`). At startup, OpenGFW logs the derived
+frame count, total ring bytes, retire timeout, and warnings when sizing is likely
+to be weak for high PPS capture.
+
+For sustained high PPS mirrors, tune in this order:
+
+- Keep `frameSize` small for ordinary MTU traffic. Use `2048` or `4096`; reserve
+  `65536` for jumbo/snaplen-heavy diagnostics because it drastically reduces
+  frames per block.
+- Increase `blockSize` and `numBlocks` before changing rules. Aim for at least
+  128 MiB of ring memory on busy hosts, and more for bursty VM fleets.
+- Keep `pollTimeout`/`retire_blk_tov` near `10ms` to `50ms`. Larger values can
+  raise latency and hold partially filled blocks too long; tiny values increase
+  wakeups and CPU overhead.
+- Enable `metrics.enabled: true` and watch packet drops while testing. If drops
+  appear, first raise ring memory, then add fanout workers or reduce analyzer
+  load.
+
 `fanoutGroup` enables Linux `PACKET_FANOUT` for deployments that intentionally
 run multiple OpenGFW packet sockets against the same mirror interface. Set the
 same `fanoutGroup` and `fanoutType` on every participant. Supported fanout types
 are `hash`, `lb`, `cpu`, `rollover`, `rnd`, and `qm`. Leave `fanoutGroup: null`
 for the normal single-process deployment.
+
+Use fanout only when you run multiple OpenGFW processes or packet sockets on the
+same capture interface. `hash` keeps a flow on the same consumer and is the
+recommended first choice for stream analyzers. `cpu` can work well with IRQ/RPS
+and process CPU affinity, while `lb` may split packets from one flow across
+workers and should be tested carefully with stream-oriented rules.
+
+CPU placement matters at high PPS. Pin the NIC or mirror interface IRQs, OpenGFW
+processes, and any fanout group members to predictable CPUs with tools such as
+`taskset`, `systemd` `CPUAffinity=`, RPS/XPS sysfs settings, or your host
+orchestrator. Avoid sharing the capture CPUs with heavy VM vCPUs when measuring
+drop rates.
+
+Run the optional local stress harness on Linux after enabling mirror traffic:
+
+```sh
+sudo env \
+  OPENGFW_AFPACKET_STRESS_IFACE=ogfw-mon0 \
+  OPENGFW_AFPACKET_STRESS_DURATION=30s \
+  OPENGFW_AFPACKET_STRESS_MAX_DROP_RATE=0.001 \
+  PATH="/usr/local/go/bin:$PATH" \
+  GOCACHE="$PWD/.gocache" \
+  go test ./io -run TestAFPacketRingBackendLocalStress -v
+```
+
+The stress test is skipped unless `OPENGFW_AFPACKET_STRESS_IFACE` is set, and is
+skipped on non-Linux hosts. Optional overrides are
+`OPENGFW_AFPACKET_STRESS_FRAME_SIZE`, `OPENGFW_AFPACKET_STRESS_BLOCK_SIZE`,
+`OPENGFW_AFPACKET_STRESS_NUM_BLOCKS`, and
+`OPENGFW_AFPACKET_STRESS_RETIRE_BLK_TOV`.
 
 ## Linux systemd deployment
 
@@ -293,6 +345,8 @@ metrics:
   enabled: true
   listen: 127.0.0.1:9090
   path: /metrics
+  packetStatsInterval: 30s
+  packetDropWarnRate: 0.01
 ```
 
 The endpoint exposes Prometheus text format and is served from a separate HTTP
@@ -308,15 +362,25 @@ Available metrics:
 - `opengfw_streams_total{proto}`
 - `opengfw_packet_kernel_packets_total`
 - `opengfw_packet_kernel_drops_total`
+- `opengfw_packet_kernel_drop_rate`
 - `opengfw_packet_read_errors_total`
+- `opengfw_packet_ring_losing_blocks_total`
 - `opengfw_risk_buckets`
 - `opengfw_risk_events_total{severity}`
 
 The packet kernel counters come from packet IO implementations that can expose
 kernel statistics. For AF_PACKET raw sockets and TPACKET_V3 rings this includes
-`PACKET_STATISTICS` packet/drop data. `opengfw_packet_read_errors_total` counts
+`PACKET_STATISTICS` packet/drop data. `opengfw_packet_kernel_drop_rate` is the
+cumulative ratio `drops / (packets + drops)`. TPACKET_V3 also exposes
+`opengfw_packet_ring_losing_blocks_total`, counted when a ring block reaches
+userspace with `TP_STATUS_LOSING`. `opengfw_packet_read_errors_total` counts
 non-timeout read errors observed by the packet IO layer. Legacy
 `opengfw_packetio_*` aliases are still emitted for existing dashboards.
+
+OpenGFW samples packet IO stats every `metrics.packetStatsInterval` and emits a
+warn log if the per-sample drop ratio exceeds `metrics.packetDropWarnRate` or if
+any TPACKET_V3 losing blocks are observed. The monitor runs even when the HTTP
+metrics endpoint is disabled, so warning logs remain available on minimal hosts.
 
 `opengfw_allowlist_suppressed_total{reason}` increments when an allowlist entry
 suppresses a rule hit before alert/risk/response processing. The `reason` label
@@ -482,38 +546,43 @@ QUIC ClientHello exposes `quic.req.ja3_hash` and `quic.req.ja4`.
 ```
 
 Maintain the hash lists in `fingerprints`. Empty lists are safe and simply make
-the fingerprint rules not match.
+the fingerprint rules not match. Fingerprints can be kept inline for small labs,
+but the example configuration loads external files so local datasets can be
+reviewed and updated without editing the main config.
 
 ```yaml
 fingerprints:
   ja3:
+    files:
+      - fingerprints/ja3.yaml
     suspicious:
-      - hash: "replace-with-real-tls-ja3-md5"
-        name: "utls-chrome-randomized-example"
+      - hash: "replace-with-local-tls-ja3-md5"
+        name: "mihomo-utls-lab"
         severity: medium
-        tags: ["utls", "proxy"]
+        tags: ["mihomo", "utls", "lab"]
   ja4:
-    suspicious:
-      - hash: "replace-with-real-tls-ja4"
-        name: "tls-ja4-proxy-example"
-        severity: medium
-        tags: ["ja4", "proxy"]
+    files:
+      - fingerprints/ja4.yaml
+    suspicious: []
   quicJa3:
-    suspicious:
-      - hash: "replace-with-real-quic-ja3-md5"
-        name: "quic-proxy-example"
-        severity: medium
-        tags: ["quic", "proxy"]
+    files:
+      - fingerprints/quic-ja3.yaml
+    suspicious: []
   quicJa4:
-    suspicious:
-      - hash: "replace-with-real-quic-ja4"
-        name: "quic-ja4-proxy-example"
-        severity: medium
-        tags: ["quic", "ja4", "proxy"]
+    files:
+      - fingerprints/quic-ja4.yaml
+    suspicious: []
 ```
 
-Do not copy public placeholder fingerprints blindly into production. JA3 and
-JA4 values vary by client, library, version, and evasion strategy. Capture known
+Each external file can contain a top-level `suspicious` list, or a full
+`fingerprints.<set>.suspicious` tree. Relative paths are resolved relative to the
+main config file. The installed example creates empty files under
+`fingerprints/`.
+
+Do not copy public placeholder fingerprints blindly into production. Do not use
+hashes from examples, blog posts, issue trackers, or public malware/proxy lists
+unless you have reproduced and validated them locally. JA3 and JA4 values vary by
+client, library, version, OS, uTLS profile, and evasion strategy. Capture known
 good and known suspicious samples from your own environment, validate them
 against normal VM workloads, then add only fingerprints that are useful in your
 local risk model. The `name`, `severity`, and `tags` fields are for human
@@ -524,6 +593,48 @@ is often more stable than raw extension order. OpenGFW keeps the existing JA3
 fields unchanged and emits JA4 beside them. Treat JA4 as a correlation signal,
 not final proof of proxy use; pair it with SNI/DNS, ALPN, ECH, flow behavior,
 destination reputation, VM identity, and allowlists.
+
+To sample fingerprints from a controlled mihomo/xray lab, run the client against
+your own server while capturing the VM mirror interface, then extract unique
+fingerprints with `tshark`:
+
+```sh
+sudo tcpdump -i ogfw-mon0 -s 512 -w mihomo-lab.pcap 'host 192.0.2.10'
+
+examples/scripts/extract-ja-fingerprints.sh \
+  -p mihomo-lab.pcap \
+  -k ja3 \
+  -n mihomo-1.18.8-lab \
+  -t mihomo -t lab > examples/fingerprints/ja3.yaml
+
+examples/scripts/extract-ja-fingerprints.sh \
+  -p xray-reality-lab.pcap \
+  -k ja4 \
+  -n xray-reality-lab \
+  -t xray -t reality > examples/fingerprints/ja4.yaml
+```
+
+Use the same workflow for `quicJa3` and `quicJa4` when QUIC handshakes are
+visible and your `tshark` build exposes the corresponding JA fields. Always run
+the PCAP replay suite and compare against HTTP/3, game, voice/video, update, and
+approved VPN traffic before raising weights or enabling responses.
+
+## Domain keyword lists
+
+The example SNI/DNS rules use `domain_keyword(value, listName)` instead of
+embedding regexes in every rule. The lists live in the main config:
+
+```yaml
+domainKeywords:
+  proxy: [v2ray, xray, clash, mihomo, hysteria, tuic, trojan, shadowsocks, sing-box, reality, shadowtls, anytls, masque]
+  vlessReality: [vless, xray, xtls, reality]
+  shadowTLSAnyTLS: [shadowtls, anytls, sing-box]
+```
+
+Keyword matches are case-insensitive substring checks after trimming a trailing
+dot from the observed name. They are operational breadcrumbs, not proof of proxy
+use. Keep the lists small, reviewed, and paired with allowlists for approved
+domains.
 
 ## VM risk aggregation
 
@@ -537,20 +648,20 @@ risk:
   enabled: true
   window: 10m
   thresholds:
-    alert: 8
-    response: 12
+    alert: 9
+    response: 16
   weights:
     vpn-wireguard: 6
     vpn-openvpn: 6
     proxy-trojan-heuristic: 5
     proxy-fully-encrypted-tcp: 4
-    proxy-socks: 3
+    proxy-socks: 4
     tls-ech-observed: 1
     quic-ech-observed: 1
-    udp443-long-lived-no-quic-sni: 1
-    hysteria2-quic-like-weak-signal: 2
+    udp443-long-lived-no-quic-sni: 0
+    hysteria2-quic-like-weak-signal: 3
     hysteria2-custom-udp-weak-signal: 1
-    tuic-quic-like-weak-signal: 2
+    tuic-quic-like-weak-signal: 3
     tuic-short-quic-burst-weak-signal: 1
     masque-connect-udp-weak-signal: 1
     tls-suspicious-ja3: 3
@@ -569,15 +680,18 @@ risk:
 ```
 
 Rules not listed under `risk.weights` have weight `1`. A weight of `0` disables
-that rule for risk scoring. Treat direct protocol markers such as WireGuard and
-OpenVPN as higher weights, locally validated JA3/JA4 as medium weights,
-and modern-proxy behavior or domain keyword rules as low to medium weights.
-Keep MASQUE candidates, custom UDP-port Hysteria2 candidates, short TUIC bursts,
-ECH-only observations, and broad keyword hits at weight `1` until local pcaps
-show they are useful. The default example keeps Hysteria2/TUIC QUIC-like flow
-shape at weight `2`, but custom UDP, MASQUE, REALITY, ShadowTLS, AnyTLS, and
-domain-keyword weak signals at weight `1`. When the cumulative score inside
-`risk.window` crosses
+that rule for risk scoring while still allowing it to be logged and replayed.
+Treat direct protocol markers such as WireGuard and OpenVPN as higher weights,
+locally validated JA3/JA4 as medium weights, and modern-proxy behavior or domain
+keyword rules as low to medium weights. The default example deliberately gives
+the broad `udp443-long-lived-no-quic-sni` helper weight `0`; it is useful replay
+context but too similar to normal HTTP/3, games, and voice/video to increase
+risk by itself. Keep MASQUE candidates, custom UDP-port Hysteria2 candidates,
+short TUIC bursts, ECH-only observations, and broad keyword hits at weight `1`
+until local pcaps show they are useful. The default example keeps
+Hysteria2/TUIC QUIC-like flow shape at weight `3`, but custom UDP, MASQUE,
+REALITY, ShadowTLS, AnyTLS, and domain-keyword weak signals at weight `1`.
+When the cumulative score inside
 `thresholds.alert`, OpenGFW sends a webhook event with `type: "risk"`:
 
 ```json
@@ -597,8 +711,8 @@ domain-keyword weak signals at weight `1`. When the cumulative score inside
     "key": "vm-100",
     "score": 9,
     "windowSeconds": 600,
-    "alertThreshold": 8,
-    "responseThreshold": 12
+    "alertThreshold": 9,
+    "responseThreshold": 16
   }
 }
 ```
@@ -774,10 +888,11 @@ sanitization workflow to trim time windows, strip unrelated packets, rewrite
 addresses/MACs, and verify that no private hostnames, tokens, application data,
 or customer traffic remain. Keep raw captures outside the repository.
 
-The manifest-driven test looks for `cmd/testdata/pcap/samples.yaml` by default,
-or the file named by `OPENGFW_PCAP_MANIFEST`. If the manifest or sample pcaps are
-missing, the test skips automatically. A manifest declares expected rule hits and
-known acceptable extra hits:
+The manifest-driven test looks for `testdata/pcap/samples.yaml` at the
+repository root by default, or the file named by `OPENGFW_PCAP_MANIFEST`. If the
+manifest or sample pcaps are missing, the test skips automatically. A manifest
+declares expected rule hits, known acceptable extra hits, and the calibrated risk
+score band:
 
 ```yaml
 samples:
@@ -800,7 +915,7 @@ count, configured risk weight, contribution, and total risk score.
 Run the manifest suite:
 
 ```sh
-OPENGFW_PCAP_MANIFEST=cmd/testdata/pcap/samples.yaml go test ./cmd -run TestExampleRulesWithPCAPManifest -v
+OPENGFW_PCAP_MANIFEST="$PWD/testdata/pcap/samples.yaml" go test ./cmd -run TestExampleRulesWithPCAPManifest -v
 ```
 
 For quick one-off replay without a manifest, set `OPENGFW_PCAP_SAMPLES` to a

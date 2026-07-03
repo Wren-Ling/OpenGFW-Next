@@ -332,6 +332,7 @@ type Function struct {
 
 func buildFunctionMap(config *BuiltinConfig) map[string]*Function {
 	fingerprints := newFingerprintMatchers(config.Fingerprints)
+	domainKeywords := newDomainKeywordMatchers(config.DomainKeywords)
 	return map[string]*Function{
 		"geoip": {
 			InitFunc:  config.GeoMatcher.LoadGeoIP,
@@ -444,6 +445,16 @@ func buildFunctionMap(config *BuiltinConfig) map[string]*Function {
 				reflect.TypeOf((func(any) bool)(nil)),
 			},
 		},
+		"domain_keyword": {
+			InitFunc:  nil,
+			PatchFunc: nil,
+			Func: func(params ...any) (any, error) {
+				return domainKeywords.match(params[0], params[1]), nil
+			},
+			Types: []reflect.Type{
+				reflect.TypeOf((func(any, any) bool)(nil)),
+			},
+		},
 	}
 }
 
@@ -506,4 +517,53 @@ func normalizeFingerprintHashValue(value any) string {
 
 func normalizeFingerprintHash(hash string) string {
 	return strings.ToLower(strings.TrimSpace(hash))
+}
+
+type domainKeywordMatchers map[string][]string
+
+func newDomainKeywordMatchers(config DomainKeywordConfig) domainKeywordMatchers {
+	matchers := make(domainKeywordMatchers, len(config))
+	for name, keywords := range config {
+		name = normalizeDomainKeywordName(name)
+		if name == "" {
+			continue
+		}
+		for _, keyword := range keywords {
+			keyword = normalizeDomainKeyword(keyword)
+			if keyword == "" {
+				continue
+			}
+			matchers[name] = append(matchers[name], keyword)
+		}
+	}
+	return matchers
+}
+
+func (m domainKeywordMatchers) match(value any, list any) bool {
+	valueString, ok := value.(string)
+	if !ok {
+		return false
+	}
+	listString, ok := list.(string)
+	if !ok {
+		return false
+	}
+	valueString = normalizeDomainKeyword(valueString)
+	if valueString == "" {
+		return false
+	}
+	for _, keyword := range m[normalizeDomainKeywordName(listString)] {
+		if strings.Contains(valueString, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeDomainKeywordName(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func normalizeDomainKeyword(value string) string {
+	return strings.Trim(strings.ToLower(strings.TrimSpace(value)), ".")
 }

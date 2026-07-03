@@ -66,6 +66,52 @@ func TestAFPacketRingConfigValidation(t *testing.T) {
 	}
 }
 
+func TestAFPacketRingConfigAdviceDefaults(t *testing.T) {
+	advice, err := AFPacketRingConfigAdviceFor(AFPacketIOConfig{})
+	if err != nil {
+		t.Fatalf("AFPacketRingConfigAdviceFor(defaults) error = %v", err)
+	}
+	if advice.Config.FrameSize != afpacketDefaultRingFrameSize {
+		t.Fatalf("default ring frameSize = %d, want %d", advice.Config.FrameSize, afpacketDefaultRingFrameSize)
+	}
+	if advice.Config.BlockSize != afpacketDefaultRingBlockSize {
+		t.Fatalf("default ring blockSize = %d, want %d", advice.Config.BlockSize, afpacketDefaultRingBlockSize)
+	}
+	if advice.Config.NumBlocks != afpacketDefaultRingNumBlocks {
+		t.Fatalf("default ring numBlocks = %d, want %d", advice.Config.NumBlocks, afpacketDefaultRingNumBlocks)
+	}
+	if advice.Config.PollTimeout != afpacketDefaultRingPollTimeout {
+		t.Fatalf("default ring pollTimeout = %s, want %s", advice.Config.PollTimeout, afpacketDefaultRingPollTimeout)
+	}
+	if advice.FramesPerBlock != advice.Config.BlockSize/advice.Config.FrameSize {
+		t.Fatalf("framesPerBlock = %d, want blockSize/frameSize", advice.FramesPerBlock)
+	}
+	if advice.FrameCount != advice.FramesPerBlock*advice.Config.NumBlocks {
+		t.Fatalf("frameCount = %d, want framesPerBlock*numBlocks", advice.FrameCount)
+	}
+	if len(advice.Warnings) != 0 {
+		t.Fatalf("default ring advice warnings = %v, want none", advice.Warnings)
+	}
+}
+
+func TestAFPacketRingConfigAdviceWarnsForHighPPSUnfriendlySizing(t *testing.T) {
+	advice, err := AFPacketRingConfigAdviceFor(AFPacketIOConfig{
+		FrameSize:   65536,
+		BlockSize:   1 << 20,
+		NumBlocks:   1,
+		PollTimeout: 500 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("AFPacketRingConfigAdviceFor() error = %v", err)
+	}
+	joined := strings.Join(advice.Warnings, "\n")
+	for _, want := range []string{"frames per block", "frameSize", "ring buffer", "retire_blk_tov"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("warnings = %v, want substring %q", advice.Warnings, want)
+		}
+	}
+}
+
 func TestAFPacketRingProcessesBlockReleasesOwnershipAndCopiesPacket(t *testing.T) {
 	blockSize := 4096
 	block := make([]byte, blockSize)
@@ -125,6 +171,30 @@ func TestAFPacketRingProcessesBlockReleasesOwnershipAndCopiesPacket(t *testing.T
 	block[packetStart+14] = 0
 	if payload[0]>>4 != 4 {
 		t.Fatal("packet data changed after ring memory mutation; want copied lifetime")
+	}
+}
+
+func TestAFPacketRingCountsLosingBlocks(t *testing.T) {
+	blockSize := 4096
+	block := make([]byte, blockSize)
+	hdr := afpacketBlockHeader(block)
+	hdr.Block_status = unix.TP_STATUS_USER | unix.TP_STATUS_LOSING
+	hdr.Num_pkts = 0
+	hdr.Offset_to_first_pkt = 0
+
+	backend := &afPacketRingBackend{
+		parent:    &afPacketIO{iface: "ogfw-test0"},
+		ring:      block,
+		blockSize: blockSize,
+		numBlocks: 1,
+	}
+	blockIndex := 0
+	processed, keepGoing := backend.processAvailableBlocks(func(Packet, error) bool { return true }, &blockIndex)
+	if !processed || !keepGoing {
+		t.Fatalf("processed/keepGoing = %v/%v, want true/true", processed, keepGoing)
+	}
+	if got := backend.losingBlocks.Load(); got != 1 {
+		t.Fatalf("losingBlocks = %d, want 1", got)
 	}
 }
 

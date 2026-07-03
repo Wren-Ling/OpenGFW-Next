@@ -18,14 +18,18 @@ import (
 )
 
 const (
-	defaultMetricsListen = "127.0.0.1:9090"
-	defaultMetricsPath   = "/metrics"
+	defaultMetricsListen               = "127.0.0.1:9090"
+	defaultMetricsPath                 = "/metrics"
+	defaultPacketStatsInterval         = 30 * time.Second
+	defaultPacketDropWarnRate  float64 = 0.01
 )
 
 type cliConfigMetrics struct {
-	Enabled bool   `mapstructure:"enabled"`
-	Listen  string `mapstructure:"listen"`
-	Path    string `mapstructure:"path"`
+	Enabled             bool          `mapstructure:"enabled"`
+	Listen              string        `mapstructure:"listen"`
+	Path                string        `mapstructure:"path"`
+	PacketStatsInterval time.Duration `mapstructure:"packetStatsInterval"`
+	PacketDropWarnRate  *float64      `mapstructure:"packetDropWarnRate"`
 }
 
 type metricsEndpoint struct {
@@ -231,14 +235,22 @@ func (m *metricsCollector) Render() string {
 	fmt.Fprintf(&b, "opengfw_packet_kernel_packets_total %d\n", packetStats.Packets)
 	writeMetricHelp(&b, "opengfw_packet_kernel_drops_total", "Total packets dropped according to packet IO kernel statistics.")
 	fmt.Fprintf(&b, "opengfw_packet_kernel_drops_total %d\n", packetStats.Drops)
+	writeMetricHelpType(&b, "opengfw_packet_kernel_drop_rate", "Cumulative packet IO kernel drop ratio, drops divided by packets plus drops.", "gauge")
+	fmt.Fprintf(&b, "opengfw_packet_kernel_drop_rate %.9g\n", opengfwio.PacketIODropRate(packetStats.Packets, packetStats.Drops))
 	writeMetricHelp(&b, "opengfw_packet_read_errors_total", "Total non-timeout packet IO read errors.")
 	fmt.Fprintf(&b, "opengfw_packet_read_errors_total %d\n", packetStats.ReadErrors)
+	writeMetricHelp(&b, "opengfw_packet_ring_losing_blocks_total", "Total TPACKET_V3 blocks observed with TP_STATUS_LOSING.")
+	fmt.Fprintf(&b, "opengfw_packet_ring_losing_blocks_total %d\n", packetStats.RingLosingBlocks)
 	writeMetricHelp(&b, "opengfw_packetio_packets_total", "Total packets observed by packet IO implementations that expose kernel statistics.")
 	fmt.Fprintf(&b, "opengfw_packetio_packets_total %d\n", packetStats.Packets)
 	writeMetricHelp(&b, "opengfw_packetio_drops_total", "Total packets dropped by packet IO implementations that expose kernel statistics.")
 	fmt.Fprintf(&b, "opengfw_packetio_drops_total %d\n", packetStats.Drops)
+	writeMetricHelpType(&b, "opengfw_packetio_drop_rate", "Cumulative packet IO drop ratio alias for existing dashboards.", "gauge")
+	fmt.Fprintf(&b, "opengfw_packetio_drop_rate %.9g\n", opengfwio.PacketIODropRate(packetStats.Packets, packetStats.Drops))
 	writeMetricHelp(&b, "opengfw_packetio_read_errors_total", "Total non-timeout packet IO read errors.")
 	fmt.Fprintf(&b, "opengfw_packetio_read_errors_total %d\n", packetStats.ReadErrors)
+	writeMetricHelp(&b, "opengfw_packetio_ring_losing_blocks_total", "Total TPACKET_V3 TP_STATUS_LOSING block observations alias for existing dashboards.")
+	fmt.Fprintf(&b, "opengfw_packetio_ring_losing_blocks_total %d\n", packetStats.RingLosingBlocks)
 	writeMetricHelpType(&b, "opengfw_risk_buckets", "Current number of active risk aggregation buckets.", "gauge")
 	fmt.Fprintf(&b, "opengfw_risk_buckets %d\n", m.riskBucketCount())
 	writeMetricHelp(&b, "opengfw_risk_events_total", "Total aggregated risk events by severity.")
@@ -247,6 +259,63 @@ func (m *metricsCollector) Render() string {
 			escapePromLabel(sample.Labels[0]), sample.Value)
 	}
 	return b.String()
+}
+
+func (m *metricsCollector) StartPacketIOStatsMonitor(ctx context.Context, config cliConfigMetrics) {
+	if m == nil || m.packetIO == nil {
+		return
+	}
+	interval := config.PacketStatsInterval
+	if interval <= 0 {
+		interval = defaultPacketStatsInterval
+	}
+	threshold := defaultPacketDropWarnRate
+	if config.PacketDropWarnRate != nil {
+		threshold = *config.PacketDropWarnRate
+	}
+	if threshold <= 0 {
+		return
+	}
+
+	go func() {
+		previous := m.packetIOStats()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+			current := m.packetIOStats()
+			packetDelta := saturatedSub(current.Packets, previous.Packets)
+			dropDelta := saturatedSub(current.Drops, previous.Drops)
+			losingDelta := saturatedSub(current.RingLosingBlocks, previous.RingLosingBlocks)
+			previous = current
+			if packetDelta == 0 && dropDelta == 0 && losingDelta == 0 {
+				continue
+			}
+			dropRate := opengfwio.PacketIODropRate(packetDelta, dropDelta)
+			if dropRate >= threshold || losingDelta > 0 {
+				logger.Warn("packet IO kernel drops exceed threshold",
+					zap.Uint64("packetDelta", packetDelta),
+					zap.Uint64("dropDelta", dropDelta),
+					zap.Float64("dropRate", dropRate),
+					zap.Float64("threshold", threshold),
+					zap.Uint64("ringLosingBlocksDelta", losingDelta),
+					zap.Uint64("packetsTotal", current.Packets),
+					zap.Uint64("dropsTotal", current.Drops),
+					zap.Uint64("ringLosingBlocksTotal", current.RingLosingBlocks))
+			}
+		}
+	}()
+}
+
+func saturatedSub(current, previous uint64) uint64 {
+	if current < previous {
+		return 0
+	}
+	return current - previous
 }
 
 func (m *metricsCollector) packetIOStats() opengfwio.PacketIOStats {
